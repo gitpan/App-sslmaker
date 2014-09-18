@@ -10,6 +10,7 @@ script/sslmaker
 t/00-basic.t
 t/act-as-your-own-certificate-authority.t
 t/create-an-intermediate-certificate-authority.t
+t/real.t
 t/sslmaker-exe.t
 t/utils.t
 META.yml                                 Module YAML meta-data (added by MakeMaker)

@@ -6,7 +6,7 @@ App::sslmaker - Be your own SSL certificate authority
 
 =head1 VERSION
 
-0.01
+0.02
 
 =head1 DESCRIPTION
 
@@ -93,7 +93,7 @@ use constant DEBUG => $ENV{SSLMAKER_DEBUG} ? 1 : 0;
 use constant DEFAULT_BITS => 4096;
 use constant DEFAULT_DAYS => 365;
 
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 our $OPENSSL = $ENV{SSLMAKER_OPENSSL} || 'openssl';
 
 my @CONFIG_TEMPLATE_KEYS = qw( bits cert crl_days days home key );
@@ -113,17 +113,24 @@ my %DATA = do {
 sub openssl {
   my $cb = ref $_[-1] eq 'CODE' ? pop : sub { warn $_[1] if length $_[1] and DEBUG == 2 };
   my $self = ref $_[0] ? shift : __PACKAGE__;
-  my $out = '';
+  my $buf = '';
 
   use IPC::Open3;
   use Symbol;
   warn "\$ $OPENSSL @_\n" if DEBUG;
   my $OUT = gensym;
   my $pid = open3(undef, $OUT, $OUT, $OPENSSL => @_);
-  $out .= $_ while readline $OUT;
+
+  while (1) {
+    my $l = sysread $OUT, my $read, 8096;
+    confess "$OPENSSL: $!" unless defined $l;
+    last unless $l;
+    $buf .= $read;
+  }
+
   waitpid $pid, 0;
-  confess sprintf 'openssl %s FAIL (%s) (%s)', join(' ', @_), $? >> 8, $out if $?;
-  $self->$cb($out);
+  confess sprintf 'openssl %s FAIL (%s) (%s)', join(' ', @_), $? >> 8, $buf if $?;
+  $self->$cb($buf);
 }
 
 =head1 ATTRIBUTES
@@ -178,6 +185,43 @@ sub make_cert {
     -key => $args->{key} || '',
     -out => $asset->path,
     -subj => $self->_render_ssl_subject($args->{subject});
+
+  return $asset;
+}
+
+=head2 make_crl
+
+  $asset = $self->make_crl({
+              key => "/path/to/private/input.key.pem",
+              cert => "/path/to/cefrt/input.cert.pem",
+              passphrase => "/path/to/passphrase.txt", # optional
+            });
+
+This method will generate a certificate revocation list (CRL) using a C<key> generated
+by L</make_key>. C<passphrase> should match the argument given to L</make_key>.
+
+The returned C<$asset> is a L<Path::Tiny> object which holds the generated certificate
+file. It is possible to specify the location of this object by passing on C<crl> to
+this method.
+
+You can inspect the generated asset using the command
+C<openssl crl -in $crl_asset -text>.
+
+See also L</revoke_cert>.
+
+=cut
+
+sub make_crl {
+  my ($self, $args) = @_;
+  my $asset = $args->{crl} ? Path::Tiny->new($args->{crl}) : Path::Tiny->tempfile;
+
+  local $UMASK = 0122; # make files with mode 644
+
+  openssl qw( ca -gencrl ),
+    -keyfile => $args->{key},
+    -cert => $args->{cert},
+    $args->{passphrase} ? (-passin => $self->_passphrase($args->{passphrase})) : (),
+    -out => $asset->path;
 
   return $asset;
 }
@@ -241,7 +285,7 @@ expects. Set C<$emplates> to a true value to generate L<files|/render_to_file>.
 
 sub make_directories {
   my ($self, $args) = @_;
-  my $home = Path::Tiny->new($args->{home});
+  my $home = $self->_home($args);
   my $file;
 
   $home->mkpath;
@@ -251,6 +295,7 @@ sub make_directories {
 
   if ($args->{templates}) {
     local $UMASK = 0122; # make files with mode 644
+    $self->render_to_file('crlnumber', $file, {}) unless -e ($file = $home->child('crlnumber'));
     $self->render_to_file('index.txt', $file, {}) unless -e ($file = $home->child('index.txt'));
     $self->render_to_file('serial', $file, {}) unless -e ($file = $home->child('serial'));
   }
@@ -334,12 +379,39 @@ See L</TEMPLATES> for list of valid templates.
 sub render_to_file {
   my $stash = pop;
   my ($self, $name, $path) = @_;
-  my $template = $self->_render_template($name, $stash);
+  my $template = $DATA{$name} // confess "No such template: $name";
   my $asset;
 
+  $template =~ s!<%=\s*([^%]+)\s*%>!{eval $1 // confess $@}!ges; # super cheap template parser
   $asset = $path ? Path::Tiny->new($path) : Path::Tiny->tempfile;
   $asset->spew({binmode => ":raw"}, $template);
   $asset;
+}
+
+=head2 revoke_cert
+
+  $self->with_config(
+    revoke_cert => {
+      key => "/path/to/private/ca.key.pem",
+      cert => "/path/to/certs/ca.cert.pem",
+      crl => "/path/to/crl.pem",
+      revoke => "/path/to/newcerts/1000.pem",
+    },
+  );
+
+This method can revoke a certificate. It need to be run either with
+C<OPENSSL_CONF> or inside L</with_config>.
+
+=cut
+
+sub revoke_cert {
+  my ($self, $args) = @_;
+  my $revoke = $args->{revoke};
+
+  openssl ca => -revoke => $revoke;
+
+  # TODO: Not sure about the return value
+  return $self->make_crl($args);
 }
 
 =head2 sign_csr
@@ -407,6 +479,8 @@ sub with_config {
   my ($self, $cb, $args) = @_;
   my $key = join ':', 'config', map { ($_, $args->{$_} // ''); } @CONFIG_TEMPLATE_KEYS;
 
+  local $args->{home} = $self->_home($args);
+
   {
     local $UMASK = 0177; # read/write for current user
     $self->{$key} ||= $self->render_to_file('openssl.cnf', $args);
@@ -425,6 +499,14 @@ sub _cat {
   print $DEST $_ for <>;
   close $DEST or confess "Close $dest failed: $!";
   return $dest;
+}
+
+sub _home {
+  my ($self, $args) = @_;
+  return Path::Tiny->new($args->{home}) if exists $args->{home};
+  return Path::Tiny->new($args->{ca_key})->parent(2) if $args->{ca_key};
+  return Path::Tiny->new($args->{key})->parent(2) if $args->{key};
+  confess 'home is required';
 }
 
 sub _passphrase {
@@ -453,18 +535,16 @@ sub _render_ssl_subject {
   return join '/', '', map { "$_=$subject{$_}" } grep { defined $subject{$_} } qw( C ST L O OU CN emailAddress );
 }
 
-sub _render_template {
-  my ($self, $name, $stash) = @_;
-  my $template = $DATA{$name} // confess "No such template: $name";
-  $template =~ s!<%=\s*([^%]+)\s*%>!{eval $1 // die $@}!ges; # super cheap template parser
-  $template;
-}
-
 =head1 TEMPLATES
 
 L</render_to_file> can render these templates, which is bundled with this module:
 
 =over 4
+
+=item * crlnumber
+
+Creates a file which stores the SSL CRL number. If C<n> is present in
+C<%stash>, it will be used as the start number, which defaults to 1000.
 
 =item * index.txt
 
@@ -511,6 +591,8 @@ Jan Henning Thorsen - C<jhthorsen@cpan.org>
 
 1;
 __DATA__
+@@ crlnumber
+<%= $stash->{n} || 1000 %>
 @@ index.txt
 @@ serial
 <%= $stash->{n} || 1000 %>
@@ -553,6 +635,7 @@ crl = $dir/crl.pem
 private_key = <%= $stash->{key} || '$dir/private/ca.key.pem' %>
 RANDFILE = $dir/private/.rand
 x509_extensions = usr_cert
+crl_extensions = crl_ext
 name_opt = ca_default
 cert_opt = ca_default
 default_days = <%= $stash->{days} || DEFAULT_DAYS %>

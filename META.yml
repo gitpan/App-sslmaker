@@ -24,4 +24,4 @@ resources:
   bugtracker: https://github.com/jhthorsen/app-sslmaker/issues
   homepage: https://github.com/jhthorsen/app-sslmaker
   repository: https://github.com/jhthorsen/app-sslmaker.git
-version: 0.01
+version: 0.02
