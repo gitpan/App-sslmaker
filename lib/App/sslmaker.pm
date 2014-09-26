@@ -6,7 +6,7 @@ App::sslmaker - Be your own SSL certificate authority
 
 =head1 VERSION
 
-0.03
+0.04
 
 =head1 DESCRIPTION
 
@@ -66,19 +66,16 @@ library.
 
 =head1 SYNOPSIS
 
-  my $sslmaker = App::sslmaker->new;
-
-  my $asset = $sslmaker->make_csr({
-                key => "/path/to/private/input.key.pem",
-                passphrase => "/path/to/passphrase.txt",
-                subject => '/C=NO/ST=Oslo',
-              });
+  my $sslmaker = App::sslmaker->new(subject => '/C=US/ST=Gotham/L=Gotham/O=Wayne Enterprises/OU=Batcave/CN=batman');
+  my $key = $sslmaker->make_key;
+  my $csr = $sslmaker->make_csr({ key => $key->path });
 
   # the content of the csr
-  print $asset->slurp;
+  print $csr->slurp;
 
   # move to a non-temp location
-  $asset->move("/path/to/certs/output.csr.pem");
+  $csr->move("/path/to/certs/output.csr.pem");
+  $key->move("/path/to/certs/output.csr.pem");
 
 All methods will throw an exception on error, unless otherwise noted.
 
@@ -93,7 +90,7 @@ use constant DEBUG => $ENV{SSLMAKER_DEBUG} ? 1 : 0;
 use constant DEFAULT_BITS => 4096;
 use constant DEFAULT_DAYS => 365;
 
-our $VERSION = '0.03';
+our $VERSION = '0.04';
 our $OPENSSL = $ENV{SSLMAKER_OPENSSL} || 'openssl';
 
 my @CONFIG_TEMPLATE_KEYS = qw( bits cert crl_days days home key );
@@ -140,7 +137,7 @@ sub openssl {
   $self = $self->subject('/C=NO/ST=Oslo/L=Oslo/O=Example/OU=Prime/emailAddress=admin@example.com');
   $str = $self->subject;
 
-Holds the default subject field for the certificates.
+Holds the default subject field for the certificate.
 
 =cut
 
@@ -379,10 +376,9 @@ See L</TEMPLATES> for list of valid templates.
 sub render_to_file {
   my $stash = pop;
   my ($self, $name, $path) = @_;
-  my $template = $DATA{$name} // confess "No such template: $name";
+  my $template = $self->_render_template($name, $stash);
   my $asset;
 
-  $template =~ s!<%=\s*([^%]+)\s*%>!{eval $1 // confess $@}!ges; # super cheap template parser
   $asset = $path ? Path::Tiny->new($path) : Path::Tiny->tempfile;
   $asset->spew({binmode => ":raw"}, $template);
   $asset;
@@ -536,6 +532,14 @@ sub _render_ssl_subject {
   }
 
   return join '/', '', map { "$_=$subject{$_}" } grep { defined $subject{$_} } qw( C ST L O OU CN emailAddress );
+}
+
+# used in script/sslmaker
+sub _render_template {
+  my ($self, $name, $stash) = @_;
+  my $template = $DATA{$name} // confess "No such template: $name";
+  $template =~ s!<%=\s*([^%]+)\s*%>!{eval $1 // confess $@}!ges; # super cheap template parser
+  $template;
 }
 
 =head1 TEMPLATES

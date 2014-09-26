@@ -12,6 +12,7 @@ t/act-as-your-own-certificate-authority.t
 t/create-an-intermediate-certificate-authority.t
 t/real.t
 t/sslmaker-exe.t
+t/synopsis.t
 t/utils.t
 META.yml                                 Module YAML meta-data (added by MakeMaker)
 META.json                                Module JSON meta-data (added by MakeMaker)
