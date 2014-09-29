@@ -6,7 +6,7 @@ App::sslmaker - Be your own SSL certificate authority
 
 =head1 VERSION
 
-0.04
+0.05
 
 =head1 DESCRIPTION
 
@@ -79,6 +79,18 @@ library.
 
 All methods will throw an exception on error, unless otherwise noted.
 
+=head2 RESOURCES
+
+=over 4
+
+=item * L<https://jamielinux.com/blog/category/CA>
+
+=item * L<https://www.digitalocean.com/community/tutorials/openssl-essentials-working-with-ssl-certificates-private-keys-and-csrs>
+
+=item * L<http://en.wikipedia.org/wiki/Certificate_authority>
+
+=back
+
 =cut
 
 use strict;
@@ -90,7 +102,7 @@ use constant DEBUG => $ENV{SSLMAKER_DEBUG} ? 1 : 0;
 use constant DEFAULT_BITS => 4096;
 use constant DEFAULT_DAYS => 365;
 
-our $VERSION = '0.04';
+our $VERSION = '0.05';
 our $OPENSSL = $ENV{SSLMAKER_OPENSSL} || 'openssl';
 
 my @CONFIG_TEMPLATE_KEYS = qw( bits cert crl_days days home key );
@@ -614,6 +626,7 @@ server {
   ssl_client_certificate <%= $stash->{ca_cert} %>;
   ssl_crl <%= $stash->{crl} || 'TODO' %>;
   ssl_verify_client <%= $stash->{verify_client} || 'optional' %>;
+  ssl_verify_depth 2;
 
   location / {
     proxy_pass http://127.0.0.1:8080;
